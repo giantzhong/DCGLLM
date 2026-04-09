@@ -292,7 +292,7 @@ class EncoderEval(nn.Module):
 
 class EncoderPure(nn.Module):
     def __init__(self,
-                 vocab_size,
+                 vocab_size,  # Not used, kept for API compatibility
                  max_seq_len,
                  num_layers=1,
                  model_dim=128,
@@ -304,20 +304,55 @@ class EncoderPure(nn.Module):
         self.encoder_layers = nn.ModuleList(
             [EncoderLayer(model_dim, num_heads, ffn_dim, dropout) for _ in
              range(num_layers)])
-        self.pre_embedding = Embedding(vocab_size, model_dim)
+        # Note: pre_embedding is removed as input is already embedded
         self.bias_embedding = torch.nn.Parameter(torch.Tensor(model_dim))
-        bound = 1 / math.sqrt(vocab_size)
+        bound = 1 / math.sqrt(model_dim)
         init.uniform_(self.bias_embedding, -bound, bound)
 
         
         self.pos_embedding = PositionalEncoding(model_dim, max_seq_len)
-        
+        self.time_layer = torch.nn.Linear(64, model_dim)
         self.selection_layer = torch.nn.Linear(1, 64)
         self.relu = nn.ReLU()
         self.tanh = nn.Tanh()
+        self.model_dim = model_dim
 
     def forward(self, diagnosis_codes, mask, mask_code, seq_time_step, input_len):
-        output = (diagnosis_codes * mask_code.unsqueeze(-2).repeat(1,1,diagnosis_codes.shape[-2], 1).cuda()).sum(dim=2) + self.bias_embedding
+        # diagnosis_codes is already embedded, shape: (batch, seq_len, embed_dim)
+        # mask_code is None in this case, so we skip the mask_code multiplication
+        
+        batch_size, seq_len, model_dim = diagnosis_codes.shape
+        
+        # Process time features from seq_time_step (numpy array from pad_time)
+        if isinstance(seq_time_step, np.ndarray):
+            seq_time_step_tensor = torch.from_numpy(seq_time_step).float().to(diagnosis_codes.device)
+        else:
+            seq_time_step_tensor = torch.tensor(seq_time_step, dtype=torch.float32).to(diagnosis_codes.device)
+        
+        # seq_time_step has shape (batch, max_seq_len), extract valid time intervals
+        # We need (batch, seq_len-1) for time intervals between visits
+        if seq_time_step_tensor.shape[1] >= seq_len - 1:
+            valid_time_steps = seq_time_step_tensor[:, :seq_len-1]  # (batch, seq_len-1)
+            # Clamp padding values (100000) to reasonable range
+            valid_time_steps = torch.clamp(valid_time_steps, min=0, max=1000)
+        else:
+            valid_time_steps = torch.zeros(batch_size, seq_len - 1, device=diagnosis_codes.device)
+        
+        # Transform time features: (batch, seq_len-1, 1) -> (batch, seq_len-1, model_dim)
+        valid_time_steps = valid_time_steps.unsqueeze(-1)  # (batch, seq_len-1, 1)
+        time_feature = self.selection_layer(valid_time_steps / 180.0)  # Normalize by 180 days
+        time_feature = 1 - self.tanh(torch.pow(time_feature, 2))
+        time_feature = self.time_layer(time_feature)  # (batch, seq_len-1, model_dim)
+        
+        # diagnosis_codes is already embedded, just add bias
+        output = diagnosis_codes + self.bias_embedding.unsqueeze(0).unsqueeze(0)
+        
+        # Add time feature to all positions except the last one
+        if time_feature.shape[1] == output.shape[1] - 1:
+            output[:, :-1, :] += time_feature
+        elif time_feature.shape[1] > 0:
+            min_len = min(time_feature.shape[1], output.shape[1] - 1)
+            output[:, :min_len, :] += time_feature[:, :min_len, :]
         
         output_pos, ind_pos = self.pos_embedding(input_len.unsqueeze(1))
         output += output_pos
@@ -431,7 +466,7 @@ class TransformerTimeAtt(nn.Module):
         super(TransformerTimeAtt, self).__init__()
         
         self.time_encoder = TimeEncoder(batch_size)
-        self.feature_encoder = EncoderPure(options['n_diagnosis_codes'] + 1, 51, num_layers=options['layer'])
+        self.feature_encoder = EncoderPure(options['n_diagnosis_codes'] + 1, 51, num_layers=options['layer'],model_dim=256)
         self.self_layer = torch.nn.Linear(128, 1)
         self.classify_layer = torch.nn.Linear(128, 2)
         self.quiry_layer = torch.nn.Linear(128, 64)
@@ -591,11 +626,11 @@ class TransformerSelf(nn.Module):
 class HitaTransformerLayer(nn.Module):
     def __init__(self, options):
         super(HitaTransformerLayer, self).__init__()
-        self.feature_encoder = EncoderPure(options['n_diagnosis_codes'] + 1, 51, num_layers=options['layer'],num_heads=options['num_heads'])
-        self.self_layer = torch.nn.Linear(128, 1)
-        self.classify_layer = torch.nn.Linear(128, 2)
-        self.quiry_layer = torch.nn.Linear(128, 64)
-        self.quiry_weight_layer = torch.nn.Linear(128, 2)
+        self.feature_encoder = EncoderPure(options['n_diagnosis_codes'] + 1, 51, num_layers=options['layer'],model_dim=options['model_dim'])
+        self.self_layer = nn.Linear(options['model_dim'], 1)
+        self.classify_layer = nn.Linear(options['model_dim'], 2)
+        self.quiry_layer = nn.Linear(options['model_dim'], options['model_dim'] // 2)
+        self.quiry_weight_layer = nn.Linear(options['model_dim'], 2)
         self.relu = nn.ReLU(inplace=True)
         
         dropout_rate = options['dropout_rate']
@@ -603,7 +638,21 @@ class HitaTransformerLayer(nn.Module):
 
 
     def forward(self, seq_dignosis_codes, seq_time_step, batch_labels, options, mask):
-        seq_time_step = np.array(list(pad_time(seq_time_step, options)))
+        # seq_time_step can be either a tensor (from HitaTransformer) or a list (from original code)
+        # If it's a tensor, convert it to the format expected by pad_time
+        if isinstance(seq_time_step, torch.Tensor):
+            # seq_time_step is (batch, seq_len-1, embed_dim) or (batch, seq_len-1)
+            # Extract time values (all dims have same value, take first if 3D)
+            if len(seq_time_step.shape) == 3:
+                seq_time_step_list = seq_time_step[:, :, 0].cpu().numpy().tolist()
+            else:
+                seq_time_step_list = seq_time_step.cpu().numpy().tolist()
+            # Pad to match sequence length
+            seq_time_step = np.array(list(pad_time(seq_time_step_list, options)))
+        else:
+            # Original format: list of lists
+            seq_time_step = np.array(list(pad_time(seq_time_step, options)))
+        
         lengths = torch.from_numpy(np.array([len(seq) for seq in seq_dignosis_codes])).cuda()
         diagnosis_codes = seq_dignosis_codes
         if options['use_gpu']:

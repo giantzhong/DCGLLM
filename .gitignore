@@ -1,4 +1,19 @@
-__pycache__
-*.env
+cat > .gitignore << 'EOF'
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.ipynb_checkpoints/
+*.ipynb
+
+checkpoint/
+trained_model/
+data/
+picture/
+
 *.log
-output
+*.out
+*.tmp
+.DS_Store
+EOF

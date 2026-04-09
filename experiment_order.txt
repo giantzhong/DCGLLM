@@ -1,0 +1,102 @@
+# Experiment 1: StageNet
+CUDA_VISIBLE_DEVICES=0 python main_dcgllm.py \
+  --dataset MIMIC4 \
+  --modeltype StageNet \
+  --cuda_choice cuda:0 \
+  --train_lr 0.0001 \
+  --weight_decay 0.001 \
+  --batch_size 256 \
+  --epochs_train 100 \
+  --train_dropout_rate 0.1 \
+  --use_dynamic_graph \
+  --use_lr_scheduler \
+  --lr_scheduler_type warmup_cosine \
+  --warmup_epochs 10 \
+  --eval_threshold_search \
+  --eval_threshold_metric pr_auc \
+  --eval_threshold_min 0.1 \
+  --eval_threshold_max 0.5 \
+  --eval_threshold_step 0.1
+
+# Experiment 2: Transformer (lr=0.0005)
+CUDA_VISIBLE_DEVICES=3 python main_dcgllm.py \
+  --dataset MIMIC4 \
+  --modeltype Transformer \
+  --cuda_choice cuda:0 \
+  --train_lr 0.0005 \
+  --weight_decay 0.001 \
+  --batch_size 256 \
+  --epochs_train 100 \
+  --train_dropout_rate 0.1 \
+  --use_dynamic_graph \
+  --use_lr_scheduler \
+  --lr_scheduler_type warmup_cosine \
+  --warmup_epochs 10 \
+  --eval_threshold_search \
+  --eval_threshold_metric pr_auc \
+  --eval_threshold_min 0.1 \
+  --eval_threshold_max 0.5 \
+  --eval_threshold_step 0.1
+
+# Experiment 3: Transformer (lr=0.0015) + cross_attention
+CUDA_VISIBLE_DEVICES=0 python main_dcgllm.py \
+  --dataset MIMIC4 \
+  --modeltype Transformer \
+  --cuda_choice cuda:0 \
+  --train_lr 0.0015 \
+  --weight_decay 0.001 \
+  --batch_size 256 \
+  --epochs_train 100 \
+  --train_dropout_rate 0.1 \
+  --use_dynamic_graph \
+  --use_cross_attention \
+  --use_lr_scheduler \
+  --lr_scheduler_type warmup_cosine \
+  --warmup_epochs 10 \
+  --eval_threshold_search \
+  --eval_threshold_metric pr_auc \
+  --eval_threshold_min 0.1 \
+  --eval_threshold_max 0.5 \
+  --eval_threshold_step 0.1
+
+# Experiment 4: GRU + cross_attention
+CUDA_VISIBLE_DEVICES=2 python main_dcgllm.py \
+  --dataset MIMIC4 \
+  --modeltype GRU \
+  --cuda_choice cuda:0 \
+  --train_lr 0.001 \
+  --weight_decay 0.001 \
+  --batch_size 256 \
+  --epochs_train 100 \
+  --train_dropout_rate 0.1 \
+  --use_dynamic_graph \
+  --use_cross_attention \
+  --use_lr_scheduler \
+  --lr_scheduler_type warmup_cosine \
+  --warmup_epochs 10 \
+  --eval_threshold_search \
+  --eval_threshold_metric pr_auc \
+  --eval_threshold_min 0.1 \
+  --eval_threshold_max 0.5 \
+  --eval_threshold_step 0.1
+
+# Experiment 5: HiTANet + cross_attention
+CUDA_VISIBLE_DEVICES=2 python main_dcgllm.py \
+  --dataset MIMIC4 \
+  --modeltype HiTANet \
+  --cuda_choice cuda:0 \
+  --train_lr 0.001 \
+  --weight_decay 0.001 \
+  --batch_size 256 \
+  --epochs_train 100 \
+  --train_dropout_rate 0.1 \
+  --use_dynamic_graph \
+  --use_cross_attention \
+  --use_lr_scheduler \
+  --lr_scheduler_type warmup_cosine \
+  --warmup_epochs 10 \
+  --eval_threshold_search \
+  --eval_threshold_metric pr_auc \
+  --eval_threshold_min 0.1 \
+  --eval_threshold_max 0.5 \
+  --eval_threshold_step 0.1

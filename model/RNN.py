@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.utils.rnn as rnn_utils
 import torch.nn.functional as F
-from datasets import SampleEHRDataset
-from models import BaseModel
+from pyhealth.datasets import SampleEHRDataset
+from pyhealth.models import BaseModel
 
 class RNNLayer(nn.Module):
     def __init__(

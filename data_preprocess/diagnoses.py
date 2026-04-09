@@ -1,9 +1,9 @@
 import json
 from tqdm import tqdm
 
-from data_preprocess.code_id_map import lookup_icd_code
+from data_preprocess.code_id_map import lookup_icd_code, who_icd10_desc
 
-def process_patient_diagnoses_data(dataset_sample, output_path):
+def process_patient_diagnoses_data(dataset_sample, output_path, dataset: str = None):
     diagnoses = {}
     for patient in tqdm(dataset_sample, desc="diagnoses"):
         patient_id = int(patient['patient_id'])
@@ -13,6 +13,9 @@ def process_patient_diagnoses_data(dataset_sample, output_path):
         for condition in conditions:
             for code in condition:
                 # look up ICD-9 CM code
+                if dataset == "HuaDong":
+                    value = who_icd10_desc(code)
+                else:
                 value = lookup_icd_code(code)
                 if value is None:
                     continue

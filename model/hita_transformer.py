@@ -4,8 +4,8 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from torch import nn
 
-from datasets import SampleEHRDataset
-from models import BaseModel
+from pyhealth.datasets import SampleEHRDataset
+from pyhealth.models import BaseModel
 
 if __name__ == "__main__":
     from hita_transformer_layer import HitaTransformerLayer
@@ -150,7 +150,7 @@ class HitaTransformer(BaseModel):
         self.embeddings = nn.ModuleDict()
         self.linear_layers = nn.ModuleDict()
 
-        for feature_key in self.feature_keys:
+        for feature_key in self.feature_keys:  # ['condictions]
             input_info = self.dataset.input_info[feature_key]
             
             if input_info["type"] not in [str, float, int]:
@@ -172,7 +172,7 @@ class HitaTransformer(BaseModel):
         self.transformer = nn.ModuleDict()
 
         self.options = {'n_diagnosis_codes':embedding_dim, 'layer':num_layers,
-                        'dropout_rate':train_dropout_rate, 'use_gpu':True, 'num_heads':num_heads}
+                        'dropout_rate':train_dropout_rate, 'use_gpu':True, 'num_heads':num_heads,'model_dim':embedding_dim}
         for feature_key in feature_keys:
             self.transformer[feature_key] = HitaTransformerLayer(self.options)
 
@@ -184,7 +184,7 @@ class HitaTransformer(BaseModel):
             input_info = self.dataset.input_info[feature_key]
             dim_, type_ = input_info["dim"], input_info["type"]
 
-            if (dim_ == 2) and (type_ == str):
+            if (dim_ == 2) and (type_ == str): # (batch, seq_len)
                 x = self.feat_tokenizers[feature_key].batch_encode_2d(
                     kwargs[feature_key]
                 )
@@ -193,12 +193,13 @@ class HitaTransformer(BaseModel):
                 
                 mask = torch.any(x !=0, dim=2)
 
-            elif (dim_ == 3) and (type_ == str):
+            elif (dim_ == 3) and (type_ == str):# (batch, seq_len, num_codes)
                 x = self.feat_tokenizers[feature_key].batch_encode_3d(
                     kwargs[feature_key]
                 )
                 x = torch.tensor(x, dtype=torch.long, device=self.device)
                 x = self.embeddings[feature_key](x)
+                x = torch.sum(x, dim=2)  # Aggregate over codes: (batch, seq_len, num_codes, embed_dim) -> (batch, seq_len, embed_dim)
                 mask = torch.any(x !=0, dim=2)
 
             
@@ -221,13 +222,17 @@ class HitaTransformer(BaseModel):
                 raise NotImplementedError
 
             
-            padding_delta_days = torch.ones_like(torch.sum(x, dim=2)).cpu()[:,:-1]
+            # Create padding_delta_days with shape (batch, seq_len-1, embed_dim)
+            # x shape is (batch, seq_len, embed_dim), so we need (batch, seq_len-1, embed_dim)
+            batch_size, seq_len, embed_dim = x.shape
+            padding_delta_days = torch.ones(batch_size, seq_len - 1, embed_dim).cpu()
+            
             for (i, batch_delta) in enumerate(kwargs['delta_days']):
                 if len(batch_delta)==1: 
                     continue
                 for (j, delta_day) in enumerate(batch_delta):
                     if delta_day != [1] and j <= padding_delta_days.shape[1]:
-                        padding_delta_days[i][j-1][:] = torch.tensor([delta_day[0] for k in range(padding_delta_days.shape[-1])])
+                        padding_delta_days[i][j-1][:] = torch.tensor([delta_day[0] for k in range(embed_dim)])
 
             _, x = self.transformer[feature_key](x, padding_delta_days,
                                                  self.prepare_labels(kwargs[self.label_key],

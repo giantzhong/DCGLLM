@@ -8,6 +8,7 @@ import pickle
 
 def generate_cfipf_feature(dataset_sample, node_masks_path, id_to_icd_map_path, code_to_icd_map_path, cfipf_dict_path):
     text_list = []
+    # 构建一个患者ID-诊断代码字符串的字典
     patient_id_index_dict = {}
 
     for index, sample in enumerate(dataset_sample):
@@ -19,13 +20,15 @@ def generate_cfipf_feature(dataset_sample, node_masks_path, id_to_icd_map_path, 
         text_list.append(" ".join(sample_text))
         patient_id_index_dict[sample['patient_id']] = index
 
-    vectorizer = TfidfVectorizer(lowercase=False)
+    # Treat each diagnosis code as a token (ICD codes may contain '.' like 'E11.9')
+    vectorizer = TfidfVectorizer(lowercase=False, token_pattern=r"(?u)\S+")
+    # 每行代表一个患者，每列代表一个诊断代码
     tv_fit = vectorizer.fit_transform(text_list).toarray()
 
     # print(tv_fit)
 
     with open(node_masks_path, "r") as f:
-        node_masks = json.load(f)
+        node_masks = json.load(f) # 记录每个患者包含哪些图节点
     with open(id_to_icd_map_path, "r") as f:
         id_to_icd_map = json.load(f)
     with open(code_to_icd_map_path, "r") as f:
@@ -38,10 +41,18 @@ def generate_cfipf_feature(dataset_sample, node_masks_path, id_to_icd_map_path, 
     icd_to_code_map = {value: key for key, value in code_to_icd_map.items()}
 
     cfipf_dict = {}
+    '''
+    {
+        'patient_id': {
+            'node_id': tf_idf_value
+        }
+    }
+    '''
     for patient_id in node_masks:
         row = patient_id_index_dict[patient_id]
         cfipf_dict[patient_id] = {}
         for node in node_masks[patient_id]:
+            # 图节点ID => ICD代码 => 原始代码
             icd = id_to_icd_map[str(node)]
             code = icd_to_code_map[icd]
             # try:

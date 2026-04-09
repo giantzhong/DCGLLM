@@ -5,9 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.rnn as rnn_utils
 
-from datasets import SampleEHRDataset
-from models import BaseModel
-from models.utils import get_last_visit
+from pyhealth.datasets import SampleEHRDataset
+from pyhealth.models import BaseModel
+from pyhealth.models.utils import get_last_visit
 
 class StageNetLayer(nn.Module):
     def __init__(
@@ -313,12 +313,47 @@ class StageNet(BaseModel):
 
             time = None
             if self.time_keys is not None:
-                input_info = self.dataset.input_info[self.time_keys[idx]]
-                dim_, type_ = input_info["dim"], input_info["type"]
-                if (dim_ != 2) or (type_ not in [float, int]):
-                    raise ValueError("Time interval must be 2-dim float or int.")
-                time, _ = self.padding2d(kwargs[self.time_keys[idx]])
-                time = torch.tensor(time, dtype=torch.float, device=self.device)
+                # delta_days is time intervals between visits
+                # Format: [[d1], [d2], ...] for each sample, length is seq_len-1
+                # We need to convert it to (batch, seq_len) by adding an initial time value
+                delta_days_list = kwargs[self.time_keys[idx]]
+                batch_size = x.shape[0]
+                seq_len = x.shape[1]
+                
+                # Convert delta_days to tensor format
+                time_list = []
+                for delta_seq in delta_days_list:
+                    # Extract time intervals from nested list format
+                    intervals = []
+                    for d in delta_seq:
+                        if isinstance(d, list) and len(d) > 0:
+                            intervals.append(float(d[0]))
+                        else:
+                            intervals.append(float(d) if isinstance(d, (int, float)) else 1.0)
+                    
+                    # Add initial time value (1.0) at the beginning to match seq_len
+                    # delta_days has seq_len-1 intervals, we need seq_len time steps
+                    if len(intervals) == seq_len - 1:
+                        intervals = [1.0] + intervals
+                    elif len(intervals) == seq_len:
+                        intervals = [max(i, 1.0) for i in intervals]  # 例如把 0 替换成 1
+                    elif len(intervals) < seq_len - 1:
+                        # Pad with 1.0
+                        intervals = [1.0] + intervals + [1.0] * (seq_len - 1 - len(intervals))
+                    else:
+                        # Truncate and add initial value
+                        intervals = [1.0] + intervals[:seq_len-1]
+                    
+                    time_list.append(intervals[:seq_len])  # Ensure exact length
+                
+                time = torch.tensor(time_list, dtype=torch.float, device=self.device)
+                # Final check: ensure time matches x's sequence length
+                if time.shape[1] != seq_len:
+                    if time.shape[1] < seq_len:
+                        padding = torch.ones(batch_size, seq_len - time.shape[1], device=self.device)
+                        time = torch.cat([time, padding], dim=1)
+                    else:
+                        time = time[:, :seq_len]
             x, _, cur_dis = self.stagenet[feature_key](x, time=time, mask=mask)
             patient_emb.append(x)
             patient_emb_all_step.append(_)

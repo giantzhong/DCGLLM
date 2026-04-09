@@ -26,6 +26,8 @@ class GraphEncoder(nn.Module):
 
     def forward(self, data_input, node_embedding):
         x, edge_index, batch, edge_attr = data_input.x, data_input.edge_index, data_input.batch, data_input.edge_attr
+        # 确保 edge_index 是 int64 类型
+        edge_index = edge_index.long()
         x_index = x[:, 0].long()
         cfipf_weight = x[:, 1]
         x = node_embedding(x_index)

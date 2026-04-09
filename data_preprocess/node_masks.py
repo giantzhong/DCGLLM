@@ -15,10 +15,12 @@ def generate_node_masks_dict(patient_dataset_path, icd_to_id_map_path, node_mask
     # create node id set
     node_id_mask = {}
     for patient_id, diseases in tqdm(patient_dataset.items()):
-        patient_id = int(patient_id)
+        patient_id = int(patient_id) # 患者id
         node_set = set()
-        for disease in diseases:
-            disease_id = icd_to_id_map[disease]
+        for disease in diseases:# 所患疾病
+            disease_id = icd_to_id_map.get(disease)
+            if disease_id is None:
+                continue
             node_set.add(disease_id)
         node_id_mask[patient_id] = list(sorted(node_set))
 
