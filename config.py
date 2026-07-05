@@ -19,6 +19,7 @@ TRUNCED_DATA_PATH = DATASET_DICTIONARY + DATASET + "/" + "diagnoses_trunc.json"
 LLM_MODEL_NUM = 4  # 每个GPU加载2个模型 → 4个模型实例 → 更高GPU利用率
 # LLM_MODEL_PATH = "/home/chenqianzhong24/model/HuatuoGPT_II"
 LLM_MODEL_PATH = f"/home/chenqianzhong24/model/{LLM_MODEL_NAME}"
+LLM_MAX_CONTEXT_LENGTH = 32768
 
 # GPU分配策略
 # 选项1: 手动指定GPU (推荐，更可控)
@@ -57,19 +58,8 @@ Answer the following question with "Yes" or "No":
 Is {DISEASE_A} clinically related to {DISEASE_B} for this patient? Yes or No.
 """
 
-
-
-PERSONALIZED_VISIT_HISTORY_TEMPLATE = \
-    "The following data consists of a sequence of hospital visits for a single patient. Each visit lists the diagnosed diseases, and the number of days since the last visit. "
-
-TRIGGER_PROMPT = "Based on the patient's medical history, '{}' is related to --- '{}'? Yes or No."
-
 PERPLEXITY_TEXT_TEMPLATE = \
     "{} is related to "
-
-# Logit-based scoring template
-LOGIT_SCORE_TEMPLATE = \
-    "{} is related to {}? Yes or No."
 
 LLM_MAKE_SCORE= ''
 
@@ -91,5 +81,7 @@ class Config:
 
         self.llm_model_num = LLM_MODEL_NUM
         self.llm_model_path = LLM_MODEL_PATH
+        self.llm_max_context_length = LLM_MAX_CONTEXT_LENGTH
+        self.patient_visit_prompt_template = PATIENT_VISIT_PROMPT_TEMPLATE
+        self.patient_task_prompt_template = PATIENT_TASK_PROMPT_TEMPLATE
         self.perplexity_text_template = PERPLEXITY_TEXT_TEMPLATE
-        self.logit_score_template = LOGIT_SCORE_TEMPLATE

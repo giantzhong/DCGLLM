@@ -26,7 +26,12 @@ CHECK_POINT_PATH = os.path.join(CHECK_POINT_DIR, "graph-checkpoint.pkl")
 # ============================================================================
 
 class LargeLanguageModel:
-    def __init__(self, model_name_or_path, index=0, device=None):
+    def __init__(
+            self,
+            model_name_or_path,
+            index=0,
+            device=None,
+            max_context_length=None):
         """
         初始化大语言模型
         
@@ -62,6 +67,28 @@ class LargeLanguageModel:
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+
+        # Preserve the task instruction at the end when a patient prompt is too
+        # long. Left padding is also the correct batching mode for a causal LM.
+        tokenizer.truncation_side = "left"
+        tokenizer.padding_side = "left"
+
+        length_candidates = [
+            getattr(model.config, "max_position_embeddings", None),
+            getattr(tokenizer, "model_max_length", None),
+        ]
+        length_candidates = [
+            value
+            for value in length_candidates
+            if isinstance(value, int) and 0 < value < 1_000_000
+        ]
+        native_max_length = min(length_candidates) if length_candidates else 2048
+        if max_context_length is None:
+            self.max_length = native_max_length
+        else:
+            if max_context_length <= 0:
+                raise ValueError("max_context_length must be positive")
+            self.max_length = min(max_context_length, native_max_length)
         
         self.model = model
         self.tokenizer = tokenizer
@@ -72,6 +99,10 @@ class LargeLanguageModel:
         
         print(f"[Model #{self.index}] ✓ 加载完成")
         print(f"[Model #{self.index}] Yes token ID: {self.yes_token_id}, No token ID: {self.no_token_id}")
+        print(
+            f"[Model #{self.index}] Context length: {self.max_length} "
+            f"(native maximum: {native_max_length})"
+        )
     
     def _get_token_id(self, token: str) -> int:
         """获取指定token的ID"""
@@ -88,7 +119,12 @@ class LargeLanguageModel:
         model, tokenizer = self.model, self.tokenizer
         
         # 编码prompt
-        encodings = tokenizer(prompt, return_tensors="pt")
+        encodings = tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=self.max_length,
+        )
         input_ids = encodings.input_ids.to(model.device)
         
         # 前向传播
@@ -128,16 +164,13 @@ class LargeLanguageModel:
         if len(prompts) == 1:
             return [self.calculate_logit_score(prompts[0])]
         
-        # 获取模型最大长度
-        max_length = getattr(model.config, 'model_max_length', getattr(model.config, 'max_position_embeddings', 2048))
-        
         # 批量编码（padding到相同长度）
         encodings = tokenizer(
             prompts, 
             return_tensors="pt", 
             padding=True,
             truncation=True,
-            max_length=max_length
+            max_length=self.max_length,
         )
         
         # 移动到GPU
@@ -157,8 +190,10 @@ class LargeLanguageModel:
         batch_size = logits.size(0)
         for i in range(batch_size):
             # 找到最后一个有效token的位置（非padding）
-            valid_length = attention_mask[i].sum().item()
-            last_valid_pos = valid_length - 1
+            valid_positions = attention_mask[i].nonzero(as_tuple=False)
+            if valid_positions.numel() == 0:
+                raise ValueError(f"Prompt {i} contains no valid tokens")
+            last_valid_pos = valid_positions[-1].item()
             
             # 获取最后一个有效token的logits
             last_token_logits = logits[i, last_valid_pos, :]  # [vocab_size]
@@ -308,7 +343,12 @@ class LargeLanguageModel:
 # ============================================================================
 
 class ModelPool:
-    def __init__(self, model_name_or_path, n_models=3, gpu_ids=None):
+    def __init__(
+            self,
+            model_name_or_path,
+            n_models=3,
+            gpu_ids=None,
+            max_context_length=None):
         """
         初始化模型池，支持多GPU
         
@@ -331,7 +371,12 @@ class ModelPool:
         for idx in range(n_models):
             gpu_id = self.gpu_ids[idx % len(self.gpu_ids)]
             device = f"cuda:{gpu_id}"
-            model = LargeLanguageModel(model_name_or_path, index=idx, device=device)
+            model = LargeLanguageModel(
+                model_name_or_path,
+                index=idx,
+                device=device,
+                max_context_length=max_context_length,
+            )
             self.models.append(model)
         
         # 打印GPU显存使用情况
@@ -372,7 +417,11 @@ class GraphBuilder:
             data_path, 
             code_map_path,
             output_path,
-            text_template,
+            text_template=None,
+            visit_data_path=None,
+            patient_visit_template=None,
+            patient_task_template=None,
+            max_context_length=None,
             n_models=3,
             gpu_ids=None,
             num_workers=None,
@@ -385,7 +434,11 @@ class GraphBuilder:
             data_path: 患者诊断数据路径
             code_map_path: 疾病代码映射路径
             output_path: 输出图数据路径
-            text_template: 文本模板
+            text_template: 旧版单段 prompt 模板（仅用于向后兼容）
+            visit_data_path: 按患者保存的格式化就诊历史路径
+            patient_visit_template: Patient Visit History 模板
+            patient_task_template: 疾病对判断任务模板
+            max_context_length: 最大上下文长度（不会超过模型原生上限）
             n_models: 模型数量
             gpu_ids: GPU ID列表
             num_workers: 线程池大小（默认等于模型数量）
@@ -398,11 +451,34 @@ class GraphBuilder:
         # 加载疾病代码映射
         with open(code_map_path, "r") as f:
             self.disease_id_map = json.load(f)
+
+        self.visit_histories = None
+        if visit_data_path is not None:
+            with open(visit_data_path, "r") as f:
+                self.visit_histories = json.load(f)
         
         self.n_disease = len(self.disease_id_map)
         self.output_path = output_path
         self.text_template = text_template
+        self.patient_visit_template = patient_visit_template
+        self.patient_task_template = patient_task_template
         self.batch_size = batch_size
+
+        uses_patient_prompt = (
+            self.patient_visit_template is not None
+            or self.patient_task_template is not None
+        )
+        if uses_patient_prompt and (
+            self.patient_visit_template is None
+            or self.patient_task_template is None
+            or self.visit_histories is None
+        ):
+            raise ValueError(
+                "Patient-specific prompting requires visit_data_path, "
+                "patient_visit_template, and patient_task_template."
+            )
+        if not uses_patient_prompt and self.text_template is None:
+            raise ValueError("A prompt template must be provided.")
         
         # 加载checkpoint（如果存在）
         if os.path.exists(CHECK_POINT_PATH):
@@ -445,7 +521,12 @@ class GraphBuilder:
             print(f"  将创建新的checkpoint: {CHECK_POINT_PATH}")
         
         # 初始化模型池
-        self.model_pool = ModelPool(model_name_or_path, n_models=n_models, gpu_ids=gpu_ids)
+        self.model_pool = ModelPool(
+            model_name_or_path,
+            n_models=n_models,
+            gpu_ids=gpu_ids,
+            max_context_length=max_context_length,
+        )
         
         # 线程池设置
         self.num_workers = num_workers if num_workers else n_models
@@ -454,6 +535,24 @@ class GraphBuilder:
         print(f"批处理大小: {batch_size}")
         print(f"预期加速: {batch_size}x (相比逐个处理)\n")
     
+    def _build_prompt(self, patient_id: int, disease1: str, disease2: str) -> str:
+        """Build the two-stage patient-specific prompt used for PCS scoring."""
+        if self.patient_visit_template is None:
+            return self.text_template.format(disease1, disease2)
+
+        patient_key = str(patient_id)
+        if patient_key not in self.visit_histories:
+            raise KeyError(f"Patient {patient_id} has no visit history")
+
+        visit_prompt = self.patient_visit_template.format(
+            VISIT_LIST=self.visit_histories[patient_key]
+        )
+        task_prompt = self.patient_task_template.format(
+            DISEASE_A=disease1,
+            DISEASE_B=disease2,
+        )
+        return visit_prompt + "\n" + task_prompt
+
     def run(self):
         """主运行函数 - 批处理版本"""
         print(f"\n开始处理 {len(self.diagnoses)} 个患者...")
@@ -512,7 +611,15 @@ class GraphBuilder:
                     failed_count += 1
             
             if failed_count > 0:
-                print(f"  警告: {failed_count} 个批次失败")
+                # Never persist a partially constructed patient graph. Save all
+                # previously completed patients, then stop so this patient is
+                # retried in full on the next run.
+                self.edges = []
+                self.save_graph(CHECK_POINT_PATH)
+                raise RuntimeError(
+                    f"Patient {patient_id} failed in {failed_count} batch(es); "
+                    "its partial graph was discarded."
+                )
             
             # 保存结果
             self.patient_graph_map[patient_id] = self.edges
@@ -565,8 +672,8 @@ class GraphBuilder:
                 disease1_id = self.disease_id_map[disease1]
                 disease2_id = self.disease_id_map[disease2]
                 
-                # 构建prompt: "{} is related to {}? Yes or No."
-                prompt = self.text_template.format(disease1, disease2)
+                # 构建包含患者就诊历史和疾病对任务的两阶段 prompt
+                prompt = self._build_prompt(patient_id, disease1, disease2)
                 prompts.append(prompt)
                 disease_ids.append((disease1_id, disease2_id))
             
@@ -602,8 +709,8 @@ class GraphBuilder:
             disease1_id = self.disease_id_map[disease1]
             disease2_id = self.disease_id_map[disease2]
             
-            # 构建prompt: "{} is related to {}? Yes or No."
-            prompt = self.text_template.format(disease1, disease2)
+            # 构建包含患者就诊历史和疾病对任务的两阶段 prompt
+            prompt = self._build_prompt(patient_id, disease1, disease2)
             
             # 从模型池获取模型
             model = self.model_pool.acquire()
@@ -675,7 +782,9 @@ if __name__ == "__main__":
         LLM_MODEL_PATH,
         LLM_MODEL_NUM,
         LLM_GPU_IDS,
-        LOGIT_SCORE_TEMPLATE
+        LLM_MAX_CONTEXT_LENGTH,
+        PATIENT_VISIT_PROMPT_TEMPLATE,
+        PATIENT_TASK_PROMPT_TEMPLATE,
     )
     from data_preprocess.data_config import DataConfig
     
@@ -708,7 +817,9 @@ if __name__ == "__main__":
 
     # Put checkpoint under the corresponding task data folder to avoid cross-task collisions
     CHECK_POINT_DIR = os.path.join(data_config.output_path, "graph_checkpoints")
-    CHECK_POINT_PATH = os.path.join(CHECK_POINT_DIR, "graph-checkpoint.pkl")
+    CHECK_POINT_PATH = os.path.join(
+        CHECK_POINT_DIR, "graph-checkpoint-patient-prompt.pkl"
+    )
     
     # Output graph goes into the corresponding task data folder by default
     graph_dataset_path = (
@@ -731,7 +842,10 @@ if __name__ == "__main__":
         data_path=patient_dataset_path,
         code_map_path=icd_to_id_map_path,
         output_path=graph_dataset_path,
-        text_template=LOGIT_SCORE_TEMPLATE,
+        visit_data_path=data_config.trunced_ehr_data_path,
+        patient_visit_template=PATIENT_VISIT_PROMPT_TEMPLATE,
+        patient_task_template=PATIENT_TASK_PROMPT_TEMPLATE,
+        max_context_length=LLM_MAX_CONTEXT_LENGTH,
         n_models=LLM_MODEL_NUM,
         gpu_ids=LLM_GPU_IDS,
         num_workers=LLM_MODEL_NUM,

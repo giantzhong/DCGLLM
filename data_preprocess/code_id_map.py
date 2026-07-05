@@ -46,7 +46,7 @@ def generate_code_id_map(
                 if dataset == "HuaDong":
                     value = who_icd10_desc(code)
                 else:
-                value = lookup_icd_code(code)
+                    value = lookup_icd_code(code)
                 if value is None:
                     continue
 

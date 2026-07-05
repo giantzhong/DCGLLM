@@ -16,7 +16,7 @@ def process_patient_diagnoses_data(dataset_sample, output_path, dataset: str = N
                 if dataset == "HuaDong":
                     value = who_icd10_desc(code)
                 else:
-                value = lookup_icd_code(code)
+                    value = lookup_icd_code(code)
                 if value is None:
                     continue
 
